@@ -1,0 +1,31 @@
+cc = clang++
+cflags = -std=c++23 -Wall -Wextra -g -O0
+
+rule cppm
+   # depfile = $out.d
+   command = $cc $cflags -fmodules -fprebuilt-module-path=. --precompile -x c++-module $in -o $out
+
+rule cppmooo
+   command = $cc $cflags -fmodules -fprebuilt-module-path=. -c $in -o $out
+
+rule cpp
+   # depfile = $out.d
+   command = $cc $cflags -fmodules -fprebuilt-module-path=. -c -x c++ $in -o $out
+
+rule link
+   command = $cc $cflags -fuse-ld=lld $in -o $out
+
+rule compile_commands
+   command = cmd /C ninja -t compdb > $out
+
+build compile_commands.json: compile_commands
+
+# build queues.pcm: cppm ../src/queues.ixx
+# build queues.o: cppmooo queues.pcm
+# build io.pcm: cppm ../src/io.ixx | queues.pcm
+# build io.o: cppmooo io.pcm
+# build main.o: cpp ../src/main.cpp | io.pcm
+# build objblaster.exe: link main.o queues.o io.o
+
+build benchmark_atomics.o: cpp ../src/benchmark_atomics.cpp
+build benchmark_atomics.exe: link benchmark_atomics.o
