@@ -68,7 +68,7 @@ struct ring_buffer
 
 export constexpr struct {} no_sentinel_value = {};
 
-template <typename T, auto sentinel_value = no_sentinel_value>
+template <typename T, bool blocking_put, bool blocking_take, auto sentinel_value = no_sentinel_value>
 struct concurrent_queue_slot
 {
 	static_assert(std::convertible_to<T, decltype(sentinel_value)>);
@@ -76,8 +76,8 @@ struct concurrent_queue_slot
 	alignas(std::hardware_destructive_interference_size) std::atomic<T> value = sentinel_value;
 };
 
-template <typename T>
-class concurrent_queue_slot<T, no_sentinel_value>
+template <typename T, bool blocking_put, bool blocking_take>
+class concurrent_queue_slot<T, blocking_put, blocking_take, no_sentinel_value>
 {
 	alignas(std::hardware_destructive_interference_size) std::atomic_flag has_value = false;
 	union { T value; };
@@ -97,13 +97,21 @@ public:
 			std::destroy_at(&value);
 	}
 
-	void put(auto&& value, std::memory_order order = std::memory_order::release)
+	template <std::memory_order order = blocking_put ? std::memory_order::acq_rel : std::memory_order::release>
+	void put(auto&& value)
 		requires requires { std::construct_at(&value, std::forward<decltype(value)>(value)); }
 	{
+		if (blocking_put)
+		{
+		}
+
 		std::construct_at(&value, std::forward<decltype(value)>(value));
 
 		[[maybe_unused]] bool had_value = has_value.test_and_set(order);
 		assert(!had_value);
+
+		if constexpr (blocking_take)
+			has_value.notify_one();
 	}
 
 	T wait_and_take(this auto&& self, std::memory_order order = std::memory_order::acquire)
@@ -119,7 +127,9 @@ public:
 export template <typename T, size_type N, auto sentinel_value = no_sentinel_value>
 class mpsc_externally_bounded_queue
 {
-	ring_buffer<concurrent_queue_slot<T, sentinel_value>, N + 1> ring_buffer;  // allocate one more slot to differentiate empty from full
+	using slot_type = concurrent_queue_slot<T, false, true, sentinel_value>;
+
+	ring_buffer<slot_type, N + 1> ring_buffer;  // allocate one more slot to differentiate empty from full
 
 	alignas(std::hardware_destructive_interference_size) std::atomic<unsigned int> tail = 0;
 	alignas(std::hardware_destructive_interference_size) unsigned int head = 0;
@@ -131,7 +141,8 @@ public:
 	{
 	}
 
-	void push(auto&& value) requires requires()
+	void push(auto&& value) noexcept
+		requires requires { ring_buffer[tail.fetch_add(1, std::memory_order::release)].put(std::forward<decltype(value)>(value)); }
 	{
 		ring_buffer[tail.fetch_add(1, std::memory_order::release)].put(std::forward<decltype(value)>(value));
 		tail.notify_one();
